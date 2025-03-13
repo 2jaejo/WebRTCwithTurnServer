@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TURN 서버를 활용한 WebRTC 연결</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
+    integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+    integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+    crossorigin="anonymous"></script>
+  </body>
+
+</html>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 1rem;
+  }
+
+  video {
+    width: 100%;
+    height: 100%;
+    background-color: #222;
+    border-radius: 0.4rem;
+  }
+
+  #chatBox {
+    min-width: 20rem;
+    height: 20rem;
+    width:100%;
+    border-radius: 0.4rem;
+  }
+
+  .status, .log {
+    margin: 10px 0;
+    border-radius: 0.4rem;
+    max-height: 10rem;
+    overflow: auto;
+  }
+
+  .error {
+    color: red;
+  }
+
+  /* 비디오 컨테이너 */
+  #videoContainer {
+    min-width: 20rem;
+    min-height: 20rem;
+    width: 100%;
+    position: relative;
+  } 
+  
+  /* 내 화면 (초기에는 전체 화면) */
+  #localVideo {
+    position: absolute;
+    object-fit: contain;
+  }
+  
+  /* 원격 화면 (초기에는 숨김) */
+  #remoteVideo {
+    position: absolute;
+    display: none;
+    object-fit: contain;
+  }
+  
+  /* 내 화면이 팝업으로 변할 때 적용될 클래스 */
+  .small-video {
+    width: 6rem;
+    height: 6rem;
+    top: 10px;
+    left: 10px;
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+    position: absolute;
+    object-fit: none;
+  }
+
+  @media (max-width: 768px) {
+    #main-container {
+      flex-direction: column !important; /* 모바일에서 세로 정렬 */
+      align-items: center !important; /* 가운데 정렬 */
+      gap: 20px; /* 간격 조절 */
+    }
+  
+    #chat-container {
+      width: 100% !important; /* 채팅 박스 너비 조정 */
+    }
+
+    #video-container {
+      width: 100% !important; /* 채팅 박스 너비 조정 */
+    }
+  
+    #chatBox {
+      min-width: auto !important; /* 채팅 박스 너비 자동 조절 */
+      width: 100% !important;
+    }
+  
+  }
+</style>
+</head>
+
+<body>
+  <h1>TURN 서버를 활용한 WebRTC 연결</h1>
+
+  <div class="status p-2 bg-light border" id="connectionStatus">상태: 연결 대기 중</div>
+
+  <div class="room-controls mt-2 d-flex justify-content-around">
+    <div class="d-flex gap-2">
+      <input type="text" class="form form-control w-25" id="roomId" placeholder="룸 ID 입력" />
+      <button id="createBtn" class="btn btn-primary">룸 생성</button>
+      <button id="joinBtn" class="btn btn-success">룸 참여</button>
+      <button id="audioBtn" class="btn btn-secondary">음소거 on</button>
+      <button id="videoBtn" class="btn btn-secondary">비디오 on</button>
+      <button id="hangupBtn" class="btn btn-danger" disabled>통화 종료</button>
+    </div>
+  </div>
+  
+  <div id="main-container" class="d-flex justify-content-center gap-2">
+    
+    
+    <div id="chat-container" class="mt-2">
+      <div>
+        <h3>채팅</h3>
+        <div id="chatBox" class="mt-2 px-2 py-3 bg-light border" style="overflow:auto;">
+        </div>
+      </div>
+      
+      <div class="py-2 d-flex gap-2">
+        <input type="text" class="form form-control w-25" id="nicknameInput" placeholder="닉네임 입력" />
+        <input type="text" class="form form-control w-50" id="messageInput" placeholder="메시지를 입력하세요..." />
+        <button id="sendBtn" class="btn btn-warning">전송</button>
+      </div>
+        
+    </div>
+
+    <div id="video-container" class="mt-2">
+      <h3>비디오</h3>
+      <div id="videoContainer">
+        <video id="remoteVideo" autoplay playsinline></video>
+        <video id="localVideo" autoplay muted playsinline></video>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="log mt-2 p-2 bg-light border" id="logArea" style="overflow:auto;"></div>
+
+  <script>
+    // 시그널링 서버 URL (실제 서버 URL로 교체)
+    const signalingServer = 'wss://your-signalingServer';
+
+    // WebRTC 설정
+    const configuration = {
+      iceServers: [
+        {
+          urls: 'stun:stun.l.google.com:19302' // 구글의 무료 STUN 서버
+        },
+        {
+          urls: 'turn:your-turn-server-url', // TURN 서버 주소
+          username: 'your-turn-server-username',           // 정적 인증 사용 시 비움
+          credential: 'your-turn-server-password',         // 정적 인증 사용 시 비움
+          credentialType: 'password'      // 정적 인증 사용 시 필요 없음
+        }
+      ],
+      iceTransportPolicy: 'all',  // 'relay'로 설정하면 TURN 서버만 사용 (강제)
+      iceCandidatePoolSize: 10
+    };
+
+    // TURN 서버에서 정적 인증 사용 시
+    function getTurnCredentials() {
+      const secretKey = 'YOUR_SECRET_KEY'; // TURN 서버 설정의 static-auth-secret 값
+      const username = Math.floor(Date.now() / 1000) + 24 * 3600; // 24시간 유효한 사용자 이름
+
+      // HMAC-SHA1 해시는 서버에서 계산하거나 미리 계산된 값을 사용
+      // 간단한 구현을 위해 여기서는 정적 값 사용
+      const credential = 'generated_hmac_sha1_hash';
+
+      return {
+        username: username.toString(),
+        credential: credential
+      };
+    }
+
+    // 동적 TURN 인증 정보 적용
+    function updateTurnCredentials() {
+      const credentials = getTurnCredentials();
+      configuration.iceServers[1].username = credentials.username;
+      configuration.iceServers[1].credential = credentials.credential;
+    }
+
+    // DOM 요소
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const videoContainer = document.getElementById('videoContainer');
+
+    const roomInput = document.getElementById('roomId');
+    const createBtn = document.getElementById('createBtn');
+    const joinBtn = document.getElementById('joinBtn');
+    
+    const chatBox = document.getElementById('chatBox');
+    const nicknameInput = document.getElementById('nicknameInput');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const audioBtn = document.getElementById('audioBtn');
+    const videoBtn = document.getElementById('videoBtn');
+    const hangupBtn = document.getElementById('hangupBtn');
+    const connectionStatus = document.getElementById('connectionStatus');
+    const logArea = document.getElementById('logArea');
+
+    // 로컬 변수
+    let localStream;
+    let peerConnection;
+    let roomId;
+    let socket;
+    
+    let isDragging = false;
+    let offsetX, offsetY;
+
+    // 로깅 함수
+    function log(message) {
+      const koreanDate = new Intl.DateTimeFormat("ko-KR", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        weekday: "long",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(new Date());
+
+      logArea.innerHTML = `<p>${koreanDate} : ${message}</p>` + logArea.innerHTML;
+      logArea.scrollTop = 0;
+    }
+
+    // 채팅 업데이트 함수
+    function updateChat(message, algin="left"){
+      chatBox.innerHTML += `<p style="text-align: ${algin};"><span class="border rounded p-2 ${algin == 'left' ? 'bg-white': 'bg-warning'}" >${message}</span></p>`;
+      chatBox.scrollTop = chatBox.scrollHeight;
+
+    }
+
+    // 상태 업데이트 함수
+    function updateStatus(message, isError = false) {
+      connectionStatus.textContent = `상태: ${message}`;
+      if (isError) {
+        connectionStatus.classList.add('error');
+      } else {
+        connectionStatus.classList.remove('error');
+      }
+    }
+
+    // 초기화 함수
+    async function init() {
+      try {
+        // 미디어 장치 접근
+        localStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+
+        // 로컬 비디오에 스트림 설정
+        localVideo.srcObject = localStream;
+
+        // 버튼 이벤트 리스너
+        createBtn.addEventListener('click', createRoom);
+        joinBtn.addEventListener('click', joinRoom);
+        sendBtn.addEventListener('click', toggleSend);
+        audioBtn.addEventListener('click', toggleAudio);
+        videoBtn.addEventListener('click', toggleVideo);
+        hangupBtn.addEventListener('click', hangup);
+
+        // keyup 이벤트 처리 (키를 떼었을 때)
+        messageInput.addEventListener('keyup', function(event) {
+          if (event.key == "Enter") {
+            sendBtn.click();
+          }
+        });
+        messageInput.addEventListener('focus', () => {
+          console.log("focus");
+          // 현재 스크롤 위치 저장
+          const scrollPos = window.scrollY;
+          
+          // 키보드가 나타난 후 스크롤 위치 복원
+          setTimeout(() => {
+            window.scrollTo(0, scrollPos);
+          }, 100);
+        });
+
+        // 마우스 클릭 시 드래그 시작
+        localVideo.addEventListener('mousedown', (e) => {
+          isDragging = true;
+          localVideo.style.cursor = 'grabbing';
+        });
+        
+        // 마우스 이동 시 드래그 처리
+        videoContainer.addEventListener('mousemove', (e) => {
+          if (isDragging) {
+            let videoContainerRect = videoContainer.getBoundingClientRect();
+            let x = e.clientX - videoContainerRect.left - localVideo.offsetWidth/2 ;
+            let y = e.clientY - videoContainerRect.top - localVideo.offsetHeight/2 ;
+            
+            // 부모 영역을 벗어나지 않게 제한
+            x = Math.max(0, Math.min(x, videoContainer.offsetWidth - localVideo.offsetWidth ));
+            y = Math.max(0, Math.min(y, videoContainer.offsetHeight - localVideo.offsetHeight ));
+
+            localVideo.style.left = `${x}px`;
+            localVideo.style.top = `${y}px`;
+          }
+        });
+        
+        // 마우스 클릭 해제 시 드래그 종료
+        videoContainer.addEventListener('mouseup', (e) => {
+          if (isDragging) {
+              isDragging = false;
+              localVideo.style.cursor = 'grab';
+          }
+        });
+
+        // 터치 클릭 시 드래그 시작
+        localVideo.addEventListener('touchstart', (e) => {
+          isDragging = true;
+          localVideo.style.cursor = 'grabbing';
+        });
+        
+        // 터치 이동 시 드래그 처리
+        videoContainer.addEventListener('touchmove', (e) => {
+          e.preventDefault();   // 기본 스크롤 방지
+          e.stopPropagation();  // 이벤트 전파 방지
+
+          if (isDragging) {
+            let videoContainerRect = videoContainer.getBoundingClientRect();
+            let x = e.touches[0].clientX - videoContainerRect.left - localVideo.offsetWidth/2 ;
+            let y = e.touches[0].clientY - videoContainerRect.top - localVideo.offsetHeight/2 ;
+            
+            // 부모 영역을 벗어나지 않게 제한
+            x = Math.max(0, Math.min(x, videoContainer.offsetWidth - localVideo.offsetWidth ));
+            y = Math.max(0, Math.min(y, videoContainer.offsetHeight - localVideo.offsetHeight ));
+
+            localVideo.style.left = `${x}px`;
+            localVideo.style.top = `${y}px`;
+          }
+        });
+        
+        // 터치 클릭 해제 시 드래그 종료
+        videoContainer.addEventListener('touchend', (e) => {
+          if (isDragging) {
+              isDragging = false;
+              localVideo.style.cursor = 'grab';
+          }
+        });
+      
+
+        updateStatus('미디어 초기화 완료. 룸 생성 또는 참여 가능');
+        log('미디어 장치 초기화 완료');
+
+      } catch (error) {
+        updateStatus(`미디어 장치 접근 오류: ${error.message}`, true);
+        log(`오류: ${error.message}`);
+      }
+    }
+
+    // 시그널링 서버 연결
+    function connectSignalingServer() {
+      // WebSocket 연결
+      socket = new WebSocket(signalingServer);
+
+      // 또는 Socket.io 사용 시
+      // socket = io(signalingServer);
+
+      socket.onopen = () => {
+        log('시그널링 서버에 연결됨');
+        updateStatus('시그널링 서버에 연결됨');
+      };
+
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        handleSignalingMessage(message);
+      };
+
+      socket.onclose = () => {
+        log('시그널링 서버 연결 종료');
+        updateStatus('시그널링 서버 연결 종료');
+      };
+
+      socket.onerror = (error) => {
+        log(`시그널링 서버 오류: ${error.message}`);
+        updateStatus(`시그널링 서버 오류`, true);
+      };
+    }
+
+    // 시그널링 메시지 처리
+    function handleSignalingMessage(message) {
+      switch (message.type) {
+        case 'offer':
+          handleOffer(message);
+          break;
+        case 'answer':
+          handleAnswer(message);
+          break;
+        case 'candidate':
+          handleCandidate(message);
+          break;
+        case 'ready':
+          // 상대방이 준비되었을 때 오퍼 생성
+          makeCall();
+          break;
+        case 'chat':
+          updateChat(message.message);
+          break;
+        case 'bye':
+          handleBye();
+          break;
+        default:
+          log(`알 수 없는 메시지 유형: ${message.type}`);
+      }
+    }
+
+    // 시그널링 메시지 전송
+    function sendSignalingMessage(message) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(message));
+      }
+    }
+
+    // 룸 생성
+    function createRoom() {
+      roomId = roomInput.value.trim();
+      if (!roomId) {
+        roomId = Math.random().toString(36).substring(2, 12);
+        roomInput.value = roomId;
+      }
+
+      log(`룸 생성: ${roomId}`);
+      updateStatus(`룸 생성 중: ${roomId}`);
+
+      connectSignalingServer();
+
+      // 서버에 룸 생성 메시지 전송
+      setTimeout(() => {
+        sendSignalingMessage({
+          type: 'create',
+          roomId: roomId
+        });
+
+        // PeerConnection 생성
+        createPeerConnection();
+
+        // UI 업데이트
+        createBtn.disabled = true;
+        joinBtn.disabled = true;
+        hangupBtn.disabled = false;
+      }, 1000);
+    }
+
+    // 룸 참여
+    function joinRoom() {
+      roomId = roomInput.value.trim();
+      if (!roomId) {
+        updateStatus('참여할 룸 ID를 입력하세요', true);
+        return;
+      }
+
+      log(`룸 참여: ${roomId}`);
+      updateStatus(`룸 참여 중: ${roomId}`);
+
+      connectSignalingServer();
+
+      // 서버에 룸 참여 메시지 전송
+      setTimeout(() => {
+        sendSignalingMessage({
+          type: 'join',
+          roomId: roomId
+        });
+
+        // PeerConnection 생성
+        createPeerConnection();
+
+        // UI 업데이트
+        createBtn.disabled = true;
+        joinBtn.disabled = true;
+        hangupBtn.disabled = false;
+
+        // 준비 상태 알림
+        sendSignalingMessage({
+          type: 'ready',
+          roomId: roomId
+        });
+      }, 1000);
+    }
+
+    // PeerConnection 생성
+    function createPeerConnection() {
+      // TURN 인증 정보 업데이트 (필요시)
+      // updateTurnCredentials();
+
+      log('PeerConnection 생성 중...');
+
+      peerConnection = new RTCPeerConnection(configuration);
+
+      // 로컬 스트림 추가
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      // ICE 후보 수집 이벤트
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          log(`ICE 후보 발견: ${event.candidate.candidate.substr(0, 50)}...`);
+
+          sendSignalingMessage({
+            type: 'candidate',
+            candidate: event.candidate,
+            roomId: roomId
+          });
+        } else {
+          log('ICE 후보 수집 완료');
+        }
+      };
+
+      // ICE 연결 상태 변경 이벤트
+      peerConnection.oniceconnectionstatechange = () => {
+        log(`ICE 연결 상태: ${peerConnection.iceConnectionState}`);
+        updateStatus(`ICE 연결 상태: ${peerConnection.iceConnectionState}`);
+
+        if (peerConnection.iceConnectionState === 'connected' ||
+          peerConnection.iceConnectionState === 'completed') {
+          updateStatus('연결 성공! TURN 서버를 통한 연결이 설정되었습니다.');
+        } else if (peerConnection.iceConnectionState === 'failed') {
+          updateStatus('연결 실패. TURN 서버 설정을 확인하세요.', true);
+        }
+      };
+
+      // 연결 상태 변경 이벤트
+      peerConnection.onconnectionstatechange = () => {
+        log(`연결 상태: ${peerConnection.connectionState}`);
+      };
+
+      // 신호 상태 변경 이벤트
+      peerConnection.onsignalingstatechange = () => {
+        log(`시그널링 상태: ${peerConnection.signalingState}`);
+      };
+
+      // 원격 스트림 추가 이벤트
+      peerConnection.ontrack = (event) => {
+        log('원격 트랙 수신됨');
+
+        if (event.streams && event.streams[0]) {
+          remoteVideo.srcObject = event.streams[0];
+          remoteVideo.style.display = "block"; // 원격 화면 보이기
+          localVideo.classList.add("small-video"); // 내 화면 작게 변경
+        }
+      };
+
+      // 협상 필요 이벤트
+      peerConnection.onnegotiationneeded = () => {
+        log('협상 필요');
+      };
+
+      log('PeerConnection 생성 완료');
+    }
+
+    // 통화 시작 (오퍼 생성)
+    async function makeCall() {
+      try {
+        log('오퍼 생성 중...');
+        updateStatus('오퍼 생성 중...');
+
+        const offer = await peerConnection.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
+
+        await peerConnection.setLocalDescription(offer);
+
+        log('오퍼 생성 및 로컬 설명 설정 완료');
+
+        sendSignalingMessage({
+          type: 'offer',
+          offer: offer,
+          roomId: roomId
+        });
+
+      } catch (error) {
+        log(`오퍼 생성 오류: ${error.message}`);
+        updateStatus(`오퍼 생성 오류: ${error.message}`, true);
+      }
+    }
+
+    // 오퍼 처리
+    async function handleOffer(message) {
+      if (!peerConnection) {
+        createPeerConnection();
+      }
+
+      try {
+        log('원격 오퍼 수신됨. 원격 설명 설정 중...');
+
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+
+        log('응답 생성 중...');
+        updateStatus('응답 생성 중...');
+
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+
+        log('응답 생성 및 로컬 설명 설정 완료');
+
+        sendSignalingMessage({
+          type: 'answer',
+          answer: answer,
+          roomId: roomId
+        });
+
+      } catch (error) {
+        log(`오퍼 처리 오류: ${error.message}`);
+        updateStatus(`오퍼 처리 오류: ${error.message}`, true);
+      }
+    }
+
+    // 응답 처리
+    async function handleAnswer(message) {
+      try {
+        log('원격 응답 수신됨. 원격 설명 설정 중...');
+
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+
+        log('원격 설명 설정 완료');
+        updateStatus('연결 중...');
+
+      } catch (error) {
+        log(`응답 처리 오류: ${error.message}`);
+        updateStatus(`응답 처리 오류: ${error.message}`, true);
+      }
+    }
+
+    // ICE 후보 처리
+    async function handleCandidate(message) {
+      try {
+        if (message.candidate) {
+          log(`원격 ICE 후보 수신됨: ${JSON.stringify(message.candidate).substr(0, 50)}...`);
+
+          await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+          log('원격 ICE 후보 추가됨');
+        }
+      } catch (error) {
+        log(`ICE 후보 처리 오류: ${error.message}`);
+      }
+    }
+
+
+
+    // 연결 종료 처리
+    function handleBye() {
+      log('상대방이 연결을 종료했습니다');
+      updateStatus('상대방이 연결을 종료했습니다');
+      hangup();
+    }
+
+
+    // 전송 토글
+    function toggleSend() {
+      let nick = nicknameInput.value;
+      let msg = messageInput.value;
+      
+      updateChat('나 : ' + msg, "right");
+
+      sendSignalingMessage({
+        type: 'chat',
+        message: (nick == '' ? '상대방' : nick) + ' : ' + msg,
+        roomId: roomId
+      });
+      messageInput.value = "";
+    }
+
+    // 오디오 토글
+    function toggleAudio() {
+      if (localStream) {
+        const audioTracks = localStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          const enabled = !audioTracks[0].enabled;
+          audioTracks[0].enabled = enabled;
+          audioBtn.textContent = enabled ? '오디오 on' : '오디오 off';
+          log(enabled ? '오디오 활성화됨' : '오디오 비활성화됨');
+        }
+      }
+    }
+
+    // 비디오 토글
+    function toggleVideo() {
+      if (localStream) {
+        const videoTracks = localStream.getVideoTracks();
+        if (videoTracks.length > 0) {
+          const enabled = !videoTracks[0].enabled;
+          videoTracks[0].enabled = enabled;
+          videoBtn.textContent = enabled ? '비디오 on' : '비디오 off';
+          log(enabled ? '비디오 활성화됨' : '비디오 비활성화됨');
+        }
+      }
+    }
+
+    // 통화 종료
+    function hangup() {
+      log('연결 종료 중...');
+
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        sendSignalingMessage({
+          type: 'bye',
+          roomId: roomId
+        });
+      }
+
+      // PeerConnection 종료
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+      }
+
+      // 원격 비디오 스트림 제거
+      remoteVideo.srcObject = null;
+      remoteVideo.style.display = "none"; 
+      localVideo.classList.remove("small-video");
+      
+      // UI 업데이트
+      createBtn.disabled = false;
+      joinBtn.disabled = false;
+      hangupBtn.disabled = true;
+
+      updateStatus('연결이 종료되었습니다');
+      log('연결이 종료되었습니다');
+    }
+
+    // 페이지 로드 시 초기화
+    window.addEventListener('load', init);
+
+    // 페이지 종료 전 정리
+    window.addEventListener('beforeunload', () => {
+      hangup();
+    });
+
+    
+  </script>
+</body>
+
+</html>
